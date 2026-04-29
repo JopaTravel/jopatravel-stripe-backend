@@ -1,0 +1,13 @@
+{
+  "name": "jopatravel-stripe-backend",
+  "version": "1.0.0",
+  "description": "Stripe Checkout backend for Jopa Travel cart and tour pages",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "stripe": "^18.0.0"
+  }
+}
