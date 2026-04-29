@@ -21,6 +21,7 @@ app.use(express.json());
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
 const SITE_URL = process.env.SITE_URL || "https://www.jopatravel.com";
 const CART_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const cartStore = new Map();
@@ -223,7 +224,12 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log("Stripe backend running on port " + PORT);
+const server = app.listen(PORT, HOST, () => {
+  console.log("Stripe backend running on " + HOST + ":" + PORT);
   console.log("Stripe configured:", Boolean(STRIPE_SECRET_KEY));
+  console.log("SITE_URL:", SITE_URL);
+});
+
+server.on("error", (error) => {
+  console.error("Server startup error:", error);
 });
