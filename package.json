@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "express": "^4.21.2",
+    "resend": "^4.0.1",
     "stripe": "^18.0.0"
   }
 }
