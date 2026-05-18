@@ -97,3 +97,242 @@ function getLeadGuestContact(items, reservation) {
     const name = String(metadata.reservation_name || "").trim();
     const email = String(metadata.reservation_email || "").trim();
     const phone = String(metadata.reservation_phone || "").trim();
+
+    if (name || email || phone) {
+      return { name, email, phone };
+    }
+  }
+
+  return { name: "", email: "", phone: "" };
+}
+
+function buildReservationSummary(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      return [
+        item.name || "Jopa Travel Reservation",
+        "Qty " + Number(item.quantity || 0),
+        "Unit " + formatUsd((Number(item.unitAmount || 0)) / 100),
+        "Total " + formatUsd((Number(item.quantity || 0) * Number(item.unitAmount || 0)) / 100)
+      ].join(" | ");
+    })
+    .join("\n");
+}
+
+async function sendCheckoutLeadEmail({ items, reservation, cartId, sessionId }) {
+  if (!RESERVATION_EMAIL_ENDPOINT) {
+    return;
+  }
+
+  const summary = buildCartSummary(items);
+  const leadGuest = getLeadGuestContact(items, reservation);
+  const payload = {
+    full_name: leadGuest.name || "",
+    email: leadGuest.email || "",
+    phone: leadGuest.phone || "",
+    passengers: summary.passengers,
+    items_in_cart: Array.isArray(items) ? items.length : 0,
+    cart_total: formatUsd(summary.total),
+    cart_page: SITE_URL + "/jopacart",
+    cart_id: cartId || "",
+    checkout_session_id: sessionId || "",
+    source: "jopa-cart-checkout-backend",
+    reservation_summary: buildReservationSummary(items),
+    _subject: "Jopa Cart Checkout Started",
+    _template: "table",
+    _captcha: "false"
+  };
+
+  const response = await fetch(RESERVATION_EMAIL_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || "Lead email could not be sent.");
+  }
+
+  await response.json().catch(() => ({}));
+}
+
+function saveCart({ cartId, reservation, cart, source }) {
+  cleanupExpiredCarts();
+
+  const normalizedItems = getNormalizedItems(cart);
+  if (!normalizedItems.length) {
+    return null;
+  }
+
+  const now = Date.now();
+  const nextCartId = cartId || generateCartId();
+  const summary = buildCartSummary(normalizedItems);
+  const previousEntry = cartStore.get(nextCartId);
+
+  const entry = {
+    id: nextCartId,
+    reservation: reservation || {},
+    cart: {
+      currency: (cart && cart.currency) || "usd",
+      items: normalizedItems
+    },
+    source: source || "",
+    createdAt: previousEntry ? previousEntry.createdAt : now,
+    updatedAt: now,
+    summary
+  };
+
+  cartStore.set(nextCartId, entry);
+  return entry;
+}
+
+function getStoredCart(cartId) {
+  cleanupExpiredCarts();
+
+  if (!cartId || !cartStore.has(cartId)) {
+    return null;
+  }
+
+  return cartStore.get(cartId);
+}
+
+app.get("/", (req, res) => {
+  res.json({
+    ok: true,
+    service: "jopatravel-stripe-backend"
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    stripeConfigured: Boolean(STRIPE_SECRET_KEY),
+    siteUrl: SITE_URL,
+    cartStoreSize: cartStore.size
+  });
+});
+
+app.post("/api/cart/store", (req, res) => {
+  try {
+    const body = req.body || {};
+    const entry = saveCart({
+      cartId: body.cartId || "",
+      reservation: body.reservation || {},
+      cart: body.cart || {},
+      source: body.source || ""
+    });
+
+    if (!entry) {
+      return res.status(400).json({ error: "No valid cart items received." });
+    }
+
+    res.json({
+      ok: true,
+      cartId: entry.id,
+      summary: entry.summary,
+      cartUrl: `${SITE_URL}/jopacart?cart_id=${encodeURIComponent(entry.id)}`
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error && error.message ? error.message : "Cart could not be stored."
+    });
+  }
+});
+
+app.get("/api/cart/:cartId", (req, res) => {
+  const entry = getStoredCart(req.params.cartId);
+
+  if (!entry) {
+    return res.status(404).json({ error: "Cart not found." });
+  }
+
+  res.json({
+    ok: true,
+    cartId: entry.id,
+    reservation: entry.reservation,
+    cart: entry.cart,
+    summary: entry.summary,
+    source: entry.source || ""
+  });
+});
+
+app.post("/api/create-checkout-session", async (req, res) => {
+  try {
+    if (!stripe) {
+      return res.status(500).json({
+        error: "Stripe secret key is missing on the server."
+      });
+    }
+
+    const body = req.body || {};
+    const storedCart = body.cartId ? getStoredCart(body.cartId) : null;
+    const reservation = storedCart ? storedCart.reservation || {} : body.reservation || {};
+    const cart = storedCart ? storedCart.cart || {} : body.cart || {};
+    const items = getNormalizedItems(cart);
+
+    if (!items.length) {
+      return res.status(400).json({ error: "No cart items received." });
+    }
+
+    const lineItems = items.map((item) => ({
+      price_data: {
+        currency: cart.currency || "usd",
+        product_data: {
+          name: item.name || "Jopa Travel Reservation",
+          metadata: item.metadata || {}
+        },
+        unit_amount: item.unitAmount
+      },
+      quantity: item.quantity || 1
+    }));
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      success_url: body.successUrl || `${SITE_URL}/thank-you?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: body.cancelUrl || `${SITE_URL}/jopacart`,
+      customer_email: reservation.email || undefined,
+      payment_method_types: ["card"],
+      line_items: lineItems,
+      metadata: {
+        full_name: reservation.fullName || "",
+        phone: reservation.phone || "",
+        hotel: reservation.hotel || "",
+        room_number: reservation.roomNumber || "",
+        reservation_date: reservation.reservationDate || "",
+        preferred_departure_time: reservation.preferredDepartureTime || "",
+        adults: String(reservation.adults || 0),
+        children: String(reservation.children || 0),
+        passengers: String(reservation.passengers || 0)
+      }
+    });
+
+    sendCheckoutLeadEmail({
+      items,
+      reservation,
+      cartId: storedCart ? storedCart.id : body.cartId || "",
+      sessionId: session.id
+    }).catch((error) => {
+      console.error("Checkout lead email error:", error && error.message ? error.message : error);
+    });
+
+    res.json({ id: session.id, url: session.url });
+  } catch (error) {
+    res.status(500).json({
+      error: error && error.message ? error.message : "Stripe session creation failed."
+    });
+  }
+});
+
+const server = app.listen(PORT, HOST, () => {
+  console.log("Stripe backend running on " + HOST + ":" + PORT);
+  console.log("Stripe configured:", Boolean(STRIPE_SECRET_KEY));
+  console.log("SITE_URL:", SITE_URL);
+});
+
+server.on("error", (error) => {
+  console.error("Server startup error:", error);
+});
