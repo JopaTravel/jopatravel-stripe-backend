@@ -1,6 +1,7 @@
 const express = require("express");
 const Stripe = require("stripe");
 const crypto = require("crypto");
+const { Resend } = require("resend");
 
 const app = express();
 
@@ -23,10 +24,14 @@ const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const SITE_URL = process.env.SITE_URL || "https://www.jopatravel.com";
-const RESERVATION_EMAIL_ENDPOINT =
-  process.env.RESERVATION_EMAIL_ENDPOINT || "https://formsubmit.co/ajax/pestevez@jopanauticos.com";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const RESEND_FROM_EMAIL =
+  process.env.RESEND_FROM_EMAIL || "Reservations <reservations@mail.jopanauticos.com>";
+const RESERVATION_NOTIFICATION_EMAIL =
+  process.env.RESERVATION_NOTIFICATION_EMAIL || "pestevez@jopanauticos.com";
 const CART_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const cartStore = new Map();
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 function cleanupExpiredCarts() {
   const now = Date.now();
@@ -112,7 +117,7 @@ function buildReservationSummary(items) {
       return [
         item.name || "Jopa Travel Reservation",
         "Qty " + Number(item.quantity || 0),
-        "Unit " + formatUsd((Number(item.unitAmount || 0)) / 100),
+        "Unit " + formatUsd(Number(item.unitAmount || 0) / 100),
         "Total " + formatUsd((Number(item.quantity || 0) * Number(item.unitAmount || 0)) / 100)
       ].join(" | ");
     })
@@ -120,44 +125,43 @@ function buildReservationSummary(items) {
 }
 
 async function sendCheckoutLeadEmail({ items, reservation, cartId, sessionId }) {
-  if (!RESERVATION_EMAIL_ENDPOINT) {
-    return;
+  if (!resend) {
+    console.warn("Resend not configured; skipping lead email.");
+    return null;
   }
 
   const summary = buildCartSummary(items);
   const leadGuest = getLeadGuestContact(items, reservation);
-  const payload = {
-    full_name: leadGuest.name || "",
-    email: leadGuest.email || "",
-    phone: leadGuest.phone || "",
-    passengers: summary.passengers,
-    items_in_cart: Array.isArray(items) ? items.length : 0,
-    cart_total: formatUsd(summary.total),
-    cart_page: SITE_URL + "/jopacart",
-    cart_id: cartId || "",
-    checkout_session_id: sessionId || "",
-    source: "jopa-cart-checkout-backend",
-    reservation_summary: buildReservationSummary(items),
-    _subject: "Jopa Cart Checkout Started",
-    _template: "table",
-    _captcha: "false"
-  };
 
-  const response = await fetch(RESERVATION_EMAIL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "application/json"
-    },
-    body: JSON.stringify(payload)
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+      <h2 style="margin:0 0 12px;">Jopa Cart Checkout Started</h2>
+      <p><strong>Cart ID:</strong> ${cartId || "-"}</p>
+      <p><strong>Stripe Session:</strong> ${sessionId || "-"}</p>
+      <p><strong>Guest:</strong> ${leadGuest.name || "-"}</p>
+      <p><strong>Email:</strong> ${leadGuest.email || "-"}</p>
+      <p><strong>Phone:</strong> ${leadGuest.phone || "-"}</p>
+      <p><strong>Passengers:</strong> ${summary.passengers}</p>
+      <p><strong>Total:</strong> ${formatUsd(summary.total)}</p>
+      <hr style="margin:16px 0;border:none;border-top:1px solid #e5e7eb;">
+      <div><strong>Reservation summary</strong><br>${buildReservationSummary(items).replace(/\n/g, "<br>")}</div>
+    </div>
+  `;
+
+  const { data, error } = await resend.emails.send({
+    from: RESEND_FROM_EMAIL,
+    to: [RESERVATION_NOTIFICATION_EMAIL],
+    subject: "Jopa Cart Checkout Started",
+    html
   });
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || "Lead email could not be sent.");
+  if (error) {
+    console.error("Resend email error:", error);
+    throw new Error(error.message || "Resend email could not be sent.");
   }
 
-  await response.json().catch(() => ({}));
+  console.log("Resend email sent:", data && data.id ? data.id : data);
+  return data;
 }
 
 function saveCart({ cartId, reservation, cart, source }) {
@@ -211,6 +215,7 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     stripeConfigured: Boolean(STRIPE_SECRET_KEY),
+    resendConfigured: Boolean(RESEND_API_KEY),
     siteUrl: SITE_URL,
     cartStoreSize: cartStore.size
   });
@@ -330,6 +335,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
 const server = app.listen(PORT, HOST, () => {
   console.log("Stripe backend running on " + HOST + ":" + PORT);
   console.log("Stripe configured:", Boolean(STRIPE_SECRET_KEY));
+  console.log("Resend configured:", Boolean(RESEND_API_KEY));
   console.log("SITE_URL:", SITE_URL);
 });
 
