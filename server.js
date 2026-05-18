@@ -1,7 +1,6 @@
 const express = require("express");
 const Stripe = require("stripe");
 const crypto = require("crypto");
-const { Resend } = require("resend");
 
 const app = express();
 
@@ -24,14 +23,10 @@ const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const SITE_URL = process.env.SITE_URL || "https://www.jopatravel.com";
-const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-const RESEND_FROM_EMAIL =
-  process.env.RESEND_FROM_EMAIL || "Reservations <reservations@mail.jopanauticos.com>";
-const RESERVATION_NOTIFICATION_EMAIL =
-  process.env.RESERVATION_NOTIFICATION_EMAIL || "pestevez@jopanauticos.com";
+const RESERVATION_EMAIL_ENDPOINT =
+  process.env.RESERVATION_EMAIL_ENDPOINT || "https://formsubmit.co/ajax/pestevez@jopanauticos.com";
 const CART_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const cartStore = new Map();
-const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 function cleanupExpiredCarts() {
   const now = Date.now();
@@ -98,3 +93,7 @@ function getLeadGuestContact(items, reservation) {
 
   const safeItems = Array.isArray(items) ? items : [];
   for (const item of safeItems) {
+    const metadata = item && item.metadata ? item.metadata : {};
+    const name = String(metadata.reservation_name || "").trim();
+    const email = String(metadata.reservation_email || "").trim();
+    const phone = String(metadata.reservation_phone || "").trim();
