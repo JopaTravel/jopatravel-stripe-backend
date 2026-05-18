@@ -23,6 +23,8 @@ const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const SITE_URL = process.env.SITE_URL || "https://www.jopatravel.com";
+const RESERVATION_EMAIL_ENDPOINT =
+  process.env.RESERVATION_EMAIL_ENDPOINT || "https://formsubmit.co/ajax/pestevez@jopanauticos.com";
 const CART_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const cartStore = new Map();
 
@@ -64,6 +66,98 @@ function buildCartSummary(items) {
     passengers: items.reduce((sum, item) => sum + Number(item.passengers || item.quantity || 0), 0),
     total: items.reduce((sum, item) => sum + (Number(item.quantity || 0) * Number(item.unitAmount || 0)) / 100, 0)
   };
+}
+
+function formatUsd(total) {
+  return "$" + Number(total || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }) + " USD";
+}
+
+function getLeadGuestContact(items, reservation) {
+  const reservationData = reservation || {};
+  const reservationName = String(
+    reservationData.fullName || reservationData.name || reservationData.reservationName || ""
+  ).trim();
+  const reservationEmail = String(reservationData.email || reservationData.reservationEmail || "").trim();
+  const reservationPhone = String(reservationData.phone || reservationData.mobile || "").trim();
+
+  if (reservationName || reservationEmail || reservationPhone) {
+    return {
+      name: reservationName,
+      email: reservationEmail,
+      phone: reservationPhone
+    };
+  }
+
+  const safeItems = Array.isArray(items) ? items : [];
+  for (const item of safeItems) {
+    const metadata = item && item.metadata ? item.metadata : {};
+    const name = String(metadata.reservation_name || "").trim();
+    const email = String(metadata.reservation_email || "").trim();
+    const phone = String(metadata.reservation_phone || "").trim();
+
+    if (name || email || phone) {
+      return { name, email, phone };
+    }
+  }
+
+  return { name: "", email: "", phone: "" };
+}
+
+function buildReservationSummary(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      return [
+        item.name || "Jopa Travel Reservation",
+        "Qty " + Number(item.quantity || 0),
+        "Unit " + formatUsd((Number(item.unitAmount || 0)) / 100),
+        "Total " + formatUsd((Number(item.quantity || 0) * Number(item.unitAmount || 0)) / 100)
+      ].join(" | ");
+    })
+    .join("\n");
+}
+
+async function sendCheckoutLeadEmail({ items, reservation, cartId, sessionId }) {
+  if (!RESERVATION_EMAIL_ENDPOINT) {
+    return;
+  }
+
+  const summary = buildCartSummary(items);
+  const leadGuest = getLeadGuestContact(items, reservation);
+  const payload = {
+    full_name: leadGuest.name || "",
+    email: leadGuest.email || "",
+    phone: leadGuest.phone || "",
+    passengers: summary.passengers,
+    items_in_cart: Array.isArray(items) ? items.length : 0,
+    cart_total: formatUsd(summary.total),
+    cart_page: SITE_URL + "/jopacart",
+    cart_id: cartId || "",
+    checkout_session_id: sessionId || "",
+    source: "jopa-cart-checkout-backend",
+    reservation_summary: buildReservationSummary(items),
+    _subject: "Jopa Cart Checkout Started",
+    _template: "table",
+    _captcha: "false"
+  };
+
+  const response = await fetch(RESERVATION_EMAIL_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || "Lead email could not be sent.");
+  }
+
+  await response.json().catch(() => ({}));
 }
 
 function saveCart({ cartId, reservation, cart, source }) {
@@ -214,6 +308,15 @@ app.post("/api/create-checkout-session", async (req, res) => {
         children: String(reservation.children || 0),
         passengers: String(reservation.passengers || 0)
       }
+    });
+
+    sendCheckoutLeadEmail({
+      items,
+      reservation,
+      cartId: storedCart ? storedCart.id : body.cartId || "",
+      sessionId: session.id
+    }).catch((error) => {
+      console.error("Checkout lead email error:", error && error.message ? error.message : error);
     });
 
     res.json({ id: session.id, url: session.url });
