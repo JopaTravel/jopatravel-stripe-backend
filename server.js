@@ -112,7 +112,7 @@ function buildReservationSummary(items) {
       return [
         item.name || "Jopa Travel Reservation",
         "Qty " + Number(item.quantity || 0),
-        "Unit " + formatUsd((Number(item.unitAmount || 0)) / 100),
+        "Unit " + formatUsd(Number(item.unitAmount || 0) / 100),
         "Total " + formatUsd((Number(item.quantity || 0) * Number(item.unitAmount || 0)) / 100)
       ].join(" | ");
     })
@@ -360,7 +360,3 @@ const server = app.listen(PORT, HOST, () => {
 server.on("error", (error) => {
   console.error("Server startup error:", error);
 });
-cd "/Users/pems/Dropbox/JON/W/Web OTA Jopa/Codigo HTML/railway-stripe-backend"
-git add server.js
-git commit -m "Add reservation notes to checkout email payload"
-git push origin main
