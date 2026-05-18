@@ -112,7 +112,7 @@ function buildReservationSummary(items) {
       return [
         item.name || "Jopa Travel Reservation",
         "Qty " + Number(item.quantity || 0),
-        "Unit " + formatUsd(Number(item.unitAmount || 0) / 100),
+        "Unit " + formatUsd((Number(item.unitAmount || 0)) / 100),
         "Total " + formatUsd((Number(item.quantity || 0) * Number(item.unitAmount || 0)) / 100)
       ].join(" | ");
     })
